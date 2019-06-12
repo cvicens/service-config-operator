@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-config-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: service-config-operator
+  template:
+    metadata:
+      labels:
+        name: service-config-operator
+    spec:
+      serviceAccountName: service-config-operator
+      containers:
+        - name: service-config-operator
+          # Replace this with the built image name
+          image: REPLACE_IMAGE
+          command:
+          - service-config-operator
+          imagePullPolicy: Always
+          env:
+            - name: WATCH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPERATOR_NAME
+              value: "service-config-operator"

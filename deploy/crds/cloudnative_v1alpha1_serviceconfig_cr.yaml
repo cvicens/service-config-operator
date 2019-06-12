@@ -1,0 +1,7 @@
+apiVersion: cloudnative.redhat.com/v1alpha1
+kind: ServiceConfig
+metadata:
+  name: example-serviceconfig
+spec:
+  # Add fields here
+  size: 3
