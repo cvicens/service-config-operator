@@ -49,3 +49,11 @@ operator-sdk up local --namespace=${PROJECT_NAME}
 
 # Modules See:
 https://github.com/golang/go/wiki/Modules#example
+
+# Links
+https://blog.openshift.com/kubernetes-operators-best-practices/
+https://banzaicloud.com/blog/operator-sdk/
+https://github.com/operator-framework/operator-sdk/blob/master/doc/user-guide.md
+https://www.tailored.cloud/kubernetes/write-a-kubernetes-controller-operator-sdk/
+https://flugel.it/building-custom-kubernetes-operators-part-3-building-operators-in-go-using-operator-sdk/
+https://itnext.io/debug-a-go-application-in-kubernetes-from-ide-c45ad26d8785
