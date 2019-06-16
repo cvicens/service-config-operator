@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"reflect"
 
 	cloudnativev1alpha1 "github.com/redhat/service-config-operator/pkg/apis/cloudnative/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -160,8 +161,26 @@ func (r *ReconcileServiceConfig) Reconcile(request reconcile.Request) (reconcile
 		return reconcile.Result{}, err
 	}
 
-	// Apply all descriptors
-	applyConfigurationDescriptorsInFolder(r, request, descriptorsFolderPath)
+	// Apply all ConfigMap and Secret descriptors if needed
+	status, err := applyConfigurationDescriptorsInFolder(r, request, descriptorsFolderPath)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	reqLogger.Info("status: " + fmt.Sprintf("%+v\n", status))
+
+	// Update the status if necessary
+	//status := cloudnativev1alpha1.ServiceConfigStatus{
+	//	State: "",
+	//}
+	if !reflect.DeepEqual(instance.Status, status) {
+		instance.Status = *status
+		err = r.client.Status().Update(context.TODO(), instance)
+		if err != nil {
+			reqLogger.Error(err, "Failed to update ServiceConfig status")
+			return reconcile.Result{}, err
+		}
+	}
 
 	// Define a new Pod object
 	pod := newPodForCR(instance)
@@ -253,23 +272,47 @@ func cloneRepository(url string, ref string) (*git.Repository, error) {
 	}
 }
 
-func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request reconcile.Request, folder string) error {
+func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request reconcile.Request, folder string) (*cloudnativev1alpha1.ServiceConfigStatus, error) {
 	logger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
+
+	status := &cloudnativev1alpha1.ServiceConfigStatus{
+		ConfigMapNamesOk:  []string{},
+		SecretNamesOk:     []string{},
+		ConfigMapNamesErr: []string{},
+		SecretNamesErr:    []string{},
+	}
+
+	configMapNamesOk := []string{}
+	configMapNamesErr := []string{}
 
 	if files, err := ioutil.ReadDir(folder); err == nil {
 		for _, f := range files {
-			logger.Info("===================== Current file: " + f.Name() + " =====================")
+			logger.Info("===================== Current file: " + folder + f.Name() + " =====================")
 			if b, err := ioutil.ReadFile(folder + f.Name()); err == nil {
 				typeMeta := &metav1.TypeMeta{}
+				logger.Info("* typeMeta: " + fmt.Sprintf("%+v %s", typeMeta, typeMeta.GetObjectKind().GroupVersionKind().Kind))
 				if err := yaml.Unmarshal([]byte(b), &typeMeta); err == nil {
 					objectMeta := &metav1.ObjectMeta{}
+					logger.Info("* objectMeta: " + fmt.Sprintf("%+v\n", objectMeta))
 					if err := yaml.Unmarshal([]byte(b), &objectMeta); err == nil {
 						objectMeta.Namespace = request.Namespace
 						switch kind := typeMeta.GetObjectKind().GroupVersionKind().Kind; kind {
 						case "ConfigMap":
-							handleConfigMap(r, logger, request.Namespace, b)
+							if err := handleConfigMap(r, logger, request.Namespace, b); err == nil {
+								logger.Info("* kind: " + typeMeta.Kind + fmt.Sprintf(" %+v", typeMeta))
+								logger.Info("* objectMeta: " + fmt.Sprintf("%+v", objectMeta))
+								configMapNamesOk = append(configMapNamesOk, objectMeta.Name)
+								logger.Info("handleConfigMap.status ok: " + fmt.Sprintf("%v\n", configMapNamesOk))
+							} else {
+								configMapNamesErr = append(configMapNamesErr, objectMeta.Name)
+								logger.Info("handleConfigMap.status err: " + fmt.Sprintf("%v\n", configMapNamesErr))
+							}
 						case "Secret":
-							handleSecret(r, logger, request.Namespace, b)
+							if err := handleSecret(r, logger, request.Namespace, b); err == nil {
+								status.SecretNamesOk = append(status.SecretNamesOk, objectMeta.Name)
+							} else {
+								status.SecretNamesErr = append(status.SecretNamesErr, objectMeta.Name)
+							}
 						default:
 							logger.Info("===== isOther =====" + kind)
 						}
@@ -279,16 +322,19 @@ func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request re
 				} else {
 					logger.Info("Unmarshall TypeMeta error: " + err.Error())
 				}
-
 			} else {
 				logger.Info("ReadFile error: " + err.Error())
 			}
 		}
 	} else {
 		logger.Info("ReadDir error: " + err.Error())
+		return nil, err
 	}
 
-	return nil
+	status.ConfigMapNamesOk = configMapNamesOk
+	status.ConfigMapNamesErr = configMapNamesErr
+
+	return status, nil
 }
 
 func diff(original, modified runtime.Object) ([]byte, error) {
@@ -373,40 +419,6 @@ func handleConfigMap(r *ReconcileServiceConfig, logger logr.Logger, namespace st
 				mergedPatchObject := &corev1.ConfigMap{}
 				patchError := calculateMergePatchObject(fromK8s, fromFile, mergedPatchObject)
 				if patchError == nil {
-					if err = r.client.Update(context.TODO(), mergedPatchObject); err != nil {
-						logger.Info("Update ConfigMap err: " + err.Error())
-					}
-				} else {
-					logger.Info("=======> patchError: " + patchError.Error())
-				}
-			}
-		} else {
-			if err = r.client.Create(context.TODO(), fromFile); err != nil {
-				logger.Info("Create ConfigMap err: " + err.Error())
-			}
-		}
-	} else {
-		logger.Info("Unmarshal ConfigMap err: " + err.Error())
-	}
-
-	return err
-}
-
-func handleConfigMapKKK(r *ReconcileServiceConfig, logger logr.Logger, namespace string, buffer []byte) error {
-	logger.Info("===== ConfigMap =====")
-	fromK8s := &corev1.ConfigMap{}
-	fromFile := &corev1.ConfigMap{}
-	fromFile.Namespace = namespace
-	dec := k8s_yaml.NewYAMLOrJSONDecoder(bytes.NewReader(buffer), 1000)
-	var err error
-	if err = dec.Decode(&fromFile); err == nil {
-		if err = r.client.Get(context.TODO(), types.NamespacedName{Name: fromFile.Name, Namespace: fromFile.Namespace}, fromK8s); err == nil {
-			fromFile.ObjectMeta.ResourceVersion = fromK8s.ObjectMeta.ResourceVersion
-			if checkIfUpdateConfigMap(fromFile, fromK8s) {
-				mergedPatchObject := &corev1.ConfigMap{}
-				patchError := calculateMergePatchObject(fromK8s, fromFile, mergedPatchObject)
-				if patchError == nil {
-					logger.Info("Updating with: " + mergedPatchObject.String())
 					if err = r.client.Update(context.TODO(), mergedPatchObject); err != nil {
 						logger.Info("Update ConfigMap err: " + err.Error())
 					}

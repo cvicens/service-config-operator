@@ -56,6 +56,11 @@ type ServiceConfigStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book.kubebuilder.io/beyond_basics/generating_crd.html
+	ConfigMapNamesOk  []string `json:"configMapNames"`
+	SecretNamesOk     []string `json:"secretNames"`
+	ConfigMapNamesErr []string `json:"configMapNames"`
+	SecretNamesErr    []string `json:"secretNames"`
+	State             string   `json:"state"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
