@@ -33,7 +33,7 @@ import (
 	git "gopkg.in/src-d/go-git.v4"
 	plumbing "gopkg.in/src-d/go-git.v4/plumbing"
 
-	yaml "gopkg.in/yaml.v2"
+	//yaml "gopkg.in/yaml.v2"
 
 	logr "github.com/go-logr/logr"
 
@@ -41,6 +41,11 @@ import (
 )
 
 var log = logf.Log.WithName("controller_serviceconfig")
+
+type BaseObject struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+}
 
 /**
 * USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
@@ -167,13 +172,12 @@ func (r *ReconcileServiceConfig) Reconcile(request reconcile.Request) (reconcile
 		return reconcile.Result{}, err
 	}
 
-	reqLogger.Info("status: " + fmt.Sprintf("%+v\n", status))
+	status.State = "IN_PROGRESS"
 
-	// Update the status if necessary
-	//status := cloudnativev1alpha1.ServiceConfigStatus{
-	//	State: "",
-	//}
-	if !reflect.DeepEqual(instance.Status, status) {
+	reqLogger.Info("status: " + fmt.Sprintf("%+v", status))
+	reqLogger.Info("instance:.Status " + fmt.Sprintf("%+v", instance.Status))
+	if !reflect.DeepEqual(instance.Status, *status) {
+		reqLogger.Info("status differs")
 		instance.Status = *status
 		err = r.client.Status().Update(context.TODO(), instance)
 		if err != nil {
@@ -282,45 +286,33 @@ func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request re
 		SecretNamesErr:    []string{},
 	}
 
-	configMapNamesOk := []string{}
-	configMapNamesErr := []string{}
-
 	if files, err := ioutil.ReadDir(folder); err == nil {
 		for _, f := range files {
 			logger.Info("===================== Current file: " + folder + f.Name() + " =====================")
 			if b, err := ioutil.ReadFile(folder + f.Name()); err == nil {
-				typeMeta := &metav1.TypeMeta{}
-				logger.Info("* typeMeta: " + fmt.Sprintf("%+v %s", typeMeta, typeMeta.GetObjectKind().GroupVersionKind().Kind))
-				if err := yaml.Unmarshal([]byte(b), &typeMeta); err == nil {
-					objectMeta := &metav1.ObjectMeta{}
-					logger.Info("* objectMeta: " + fmt.Sprintf("%+v\n", objectMeta))
-					if err := yaml.Unmarshal([]byte(b), &objectMeta); err == nil {
-						objectMeta.Namespace = request.Namespace
-						switch kind := typeMeta.GetObjectKind().GroupVersionKind().Kind; kind {
-						case "ConfigMap":
-							if err := handleConfigMap(r, logger, request.Namespace, b); err == nil {
-								logger.Info("* kind: " + typeMeta.Kind + fmt.Sprintf(" %+v", typeMeta))
-								logger.Info("* objectMeta: " + fmt.Sprintf("%+v", objectMeta))
-								configMapNamesOk = append(configMapNamesOk, objectMeta.Name)
-								logger.Info("handleConfigMap.status ok: " + fmt.Sprintf("%v\n", configMapNamesOk))
-							} else {
-								configMapNamesErr = append(configMapNamesErr, objectMeta.Name)
-								logger.Info("handleConfigMap.status err: " + fmt.Sprintf("%v\n", configMapNamesErr))
-							}
-						case "Secret":
-							if err := handleSecret(r, logger, request.Namespace, b); err == nil {
-								status.SecretNamesOk = append(status.SecretNamesOk, objectMeta.Name)
-							} else {
-								status.SecretNamesErr = append(status.SecretNamesErr, objectMeta.Name)
-							}
-						default:
-							logger.Info("===== isOther =====" + kind)
+				baseObject := &BaseObject{}
+				dec := k8s_yaml.NewYAMLOrJSONDecoder(bytes.NewReader(b), 1000)
+				if err := dec.Decode(&baseObject); err == nil {
+					switch kind := baseObject.Kind; kind {
+					case "ConfigMap":
+						if err := handleConfigMap(r, logger, request.Namespace, b); err == nil {
+							status.ConfigMapNamesOk = append(status.ConfigMapNamesOk, baseObject.Name)
+							logger.Info("handleConfigMap.status ok: " + fmt.Sprintf("%v", status.ConfigMapNamesOk))
+						} else {
+							status.ConfigMapNamesErr = append(status.ConfigMapNamesErr, baseObject.Name)
+							logger.Info("handleConfigMap.status err: " + fmt.Sprintf("%v", status.ConfigMapNamesErr))
 						}
-					} else {
-						logger.Info("Unmarshall ObjectMeta error: " + err.Error())
+					case "Secret":
+						if err := handleSecret(r, logger, request.Namespace, b); err == nil {
+							status.SecretNamesOk = append(status.SecretNamesOk, baseObject.Name)
+						} else {
+							status.SecretNamesErr = append(status.SecretNamesErr, baseObject.Name)
+						}
+					default:
+						logger.Info("===== isOther =====" + kind)
 					}
 				} else {
-					logger.Info("Unmarshall TypeMeta error: " + err.Error())
+					logger.Info("Unmarshall BaseObject error: " + err.Error())
 				}
 			} else {
 				logger.Info("ReadFile error: " + err.Error())
@@ -330,9 +322,6 @@ func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request re
 		logger.Info("ReadDir error: " + err.Error())
 		return nil, err
 	}
-
-	status.ConfigMapNamesOk = configMapNamesOk
-	status.ConfigMapNamesErr = configMapNamesErr
 
 	return status, nil
 }
