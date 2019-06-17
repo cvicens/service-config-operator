@@ -50,14 +50,15 @@ operator-sdk up local --namespace=${PROJECT_NAME}
 
 ## Build
 export QUAY_USERNAME=cvicensa
-operator-sdk build quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v0.0.1
+export OPERATOR_VERSION=0.0.1
+operator-sdk build quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v${OPERATOR_VERSION}
 
 ## Change operator.yaml
-//cat deploy/operator.yaml | sed "s|REPLACE_IMAGE|quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v0.0.1|g" > deploy/operator-v0.0.1.yaml
-sed -i "" "s|REPLACE_IMAGE|quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v0.0.1|g" deploy/operator.yaml
+//cat deploy/operator.yaml | sed "s|REPLACE_IMAGE|quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v${OPERATOR_VERSION}|g" > deploy/operator-v${OPERATOR_VERSION}.yaml
+sed -i "" "s|REPLACE_IMAGE|quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v${OPERATOR_VERSION}|g" deploy/operator.yaml
 
 ## Push image
-docker push quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v0.0.1
+docker push quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v${OPERATOR_VERSION}
 
 ## Deploy the operator manually
 oc apply -f deploy/operator.yaml
@@ -65,7 +66,7 @@ oc apply -f deploy/operator.yaml
 # Manage the operator using the Operator Lifecycle Manager
 
 ## Generate an operator Cluster Service Version (CSV) manifest
-operator-sdk olm-catalog gen-csv --csv-version 0.0.1
+operator-sdk olm-catalog gen-csv --csv-version ${OPERATOR_VERSION}
 
 ## Deploy the operator
 
@@ -75,7 +76,8 @@ oc delete -f deploy/operator.yaml
 
 ### Create an OperatorGroup
 
-cat <<EOF | oc create -n ${ISTIO_SYSTEM_NAMESPACE} -f -
+/// Careful...
+cat <<EOF | oc create -n ${PROJECT_NAME} -f -
 apiVersion: operators.coreos.com/v1alpha2
 kind: OperatorGroup
 metadata:
@@ -85,6 +87,17 @@ metadata:
     targetNamespaces:
     - ${PROJECT_NAME}
 EOF
+
+### Create a CSV
+sed -e "s|REPLACE_NAMESPACE|${PROJECT_NAME}|g" deploy/olm-catalog/${OPERATOR_NAME}/${OPERATOR_VERSION}/${OPERATOR_NAME}.v${OPERATOR_VERSION}.clusterserviceversion.yaml > deploy/olm-catalog/${OPERATOR_NAME}/${OPERATOR_VERSION}/${OPERATOR_NAME}.v${OPERATOR_VERSION}.clusterserviceversion-${PROJECT_NAME}.yaml
+oc apply -f deploy/olm-catalog/${OPERATOR_NAME}/${OPERATOR_VERSION}/${OPERATOR_NAME}.v${OPERATOR_VERSION}.clusterserviceversion-${PROJECT_NAME}.yaml
+oc get ClusterServiceVersion ${OPERATOR_NAME}.v${OPERATOR_VERSION} -o json | jq '.status'
+
+### Create a subscription
+sed -e "s|REPLACE_NAMESPACE|${PROJECT_NAME}|g" deploy/${OPERATOR_NAME}-subscription.yaml > deploy/${OPERATOR_NAME}-subscription-${PROJECT_NAME}.yaml
+oc apply -f deploy/${OPERATOR_NAME}-subscription-${PROJECT_NAME}.yaml
+
+
 
 # Modules See:
 https://github.com/golang/go/wiki/Modules#example

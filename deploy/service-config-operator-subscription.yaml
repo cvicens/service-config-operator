@@ -1,0 +1,11 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: service-config-subscription
+  generateName: service-config-
+  namespace: REPLACE_NAMESPACE
+spec:
+  source: certified-operators
+  name: service-config
+  startingCSV: service-config-operator.v0.0.1
+  channel: alpha
