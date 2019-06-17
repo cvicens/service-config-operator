@@ -16,7 +16,7 @@ spec:
       containers:
         - name: service-config-operator
           # Replace this with the built image name
-          image: REPLACE_IMAGE
+          image: quay.io/cvicensa/service-config-operator:v0.0.1
           command:
           - service-config-operator
           imagePullPolicy: Always

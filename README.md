@@ -34,7 +34,8 @@ go mod vendor
 ## List module versions
 go list -m -versions gopkg.in/src-d/go-git.v4
 
-# Run locally
+# Build and run the operator
+## Run locally
 export PROJECT_NAME=${OPERATOR_NAME}-tests
 oc new-project ${PROJECT_NAME}
 
@@ -46,6 +47,44 @@ oc apply -f deploy/crds/cloudnative_v1alpha1_serviceconfig_crd.yaml
 oc apply -f deploy/crds/cloudnative_v1alpha1_serviceconfig_cr.yaml
 
 operator-sdk up local --namespace=${PROJECT_NAME}
+
+## Build
+export QUAY_USERNAME=cvicensa
+operator-sdk build quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v0.0.1
+
+## Change operator.yaml
+//cat deploy/operator.yaml | sed "s|REPLACE_IMAGE|quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v0.0.1|g" > deploy/operator-v0.0.1.yaml
+sed -i "" "s|REPLACE_IMAGE|quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v0.0.1|g" deploy/operator.yaml
+
+## Push image
+docker push quay.io/${QUAY_USERNAME}/${OPERATOR_NAME}:v0.0.1
+
+## Deploy the operator manually
+oc apply -f deploy/operator.yaml
+
+# Manage the operator using the Operator Lifecycle Manager
+
+## Generate an operator Cluster Service Version (CSV) manifest
+operator-sdk olm-catalog gen-csv --csv-version 0.0.1
+
+## Deploy the operator
+
+First undeploy the manually deployed operator
+
+oc delete -f deploy/operator.yaml
+
+### Create an OperatorGroup
+
+cat <<EOF | oc create -n ${ISTIO_SYSTEM_NAMESPACE} -f -
+apiVersion: operators.coreos.com/v1alpha2
+kind: OperatorGroup
+metadata:
+  name: ${OPERATOR_NAME}-group
+  namespace: ${PROJECT_NAME}
+  spec:
+    targetNamespaces:
+    - ${PROJECT_NAME}
+EOF
 
 # Modules See:
 https://github.com/golang/go/wiki/Modules#example

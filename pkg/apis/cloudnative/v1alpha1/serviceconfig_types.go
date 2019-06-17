@@ -50,12 +50,22 @@ type ServiceConfigSpec struct {
 	VolumeMounts      []VolumeMount     `json:"volumeMounts,omitempty"`
 }
 
+// ReconcileStatus represent the status of the last reconcile cycle. It's used to communicate success or failer and the error message
+// +k8s:openapi-gen=true
+type ReconcileStatus struct {
+	// +kubebuilder:validation:Enum=Success,Failure
+	Status     string      `json:"status,omitempty"`
+	LastUpdate metav1.Time `json:"lastUpdate,omitempty"`
+	Reason     string      `json:"reason,omitempty"`
+}
+
 // ServiceConfigStatus defines the observed state of ServiceConfig
 // +k8s:openapi-gen=true
 type ServiceConfigStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book.kubebuilder.io/beyond_basics/generating_crd.html
+	ReconcileStatus   `json:",inline"`
 	ConfigMapNamesOk  []string `json:"configMapNamesOk"`
 	SecretNamesOk     []string `json:"secretNamesOk"`
 	ConfigMapNamesErr []string `json:"configMapNamesErr"`

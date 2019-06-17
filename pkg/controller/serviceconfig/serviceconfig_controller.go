@@ -3,6 +3,7 @@ package serviceconfig
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -10,7 +11,7 @@ import (
 
 	cloudnativev1alpha1 "github.com/redhat/service-config-operator/pkg/apis/cloudnative/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	types "k8s.io/apimachinery/pkg/types"
@@ -28,6 +29,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	record "k8s.io/client-go/tools/record"
+
 	util "github.com/redhat/service-config-operator/pkg/util"
 
 	git "gopkg.in/src-d/go-git.v4"
@@ -40,7 +43,10 @@ import (
 	cmp "github.com/google/go-cmp/cmp"
 )
 
-var log = logf.Log.WithName("controller_serviceconfig")
+// Best practices
+const controllerName = "controller_serviceconfig"
+
+var log = logf.Log.WithName(controllerName)
 
 type BaseObject struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -60,7 +66,8 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	return &ReconcileServiceConfig{client: mgr.GetClient(), scheme: mgr.GetScheme()}
+	// Best practices
+	return &ReconcileServiceConfig{client: mgr.GetClient(), scheme: mgr.GetScheme(), recorder: mgr.GetRecorder(controllerName)}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
@@ -74,15 +81,32 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	serviceConfigOk := predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			log.Info("serviceConfigOk (predicate->UpdateFunc)")
+			// Check that new and old objects are the expected type
 			_, ok := e.ObjectOld.(*cloudnativev1alpha1.ServiceConfig)
 			if !ok {
+				log.Error(nil, "Update event has no old proper runtime object to update", "event", e)
 				return false
 			}
 			newServiceConfig, ok := e.ObjectNew.(*cloudnativev1alpha1.ServiceConfig)
 			if !ok {
+				log.Error(nil, "Update event has no proper new runtime object for update", "event", e)
 				return false
 			}
 			if !newServiceConfig.Spec.Enabled {
+				log.Error(nil, "Runtime object is not enabled", "event", e)
+				return false
+			}
+
+			// Also check ff no change in ResourceGeneration to return false
+			if e.MetaOld == nil {
+				log.Error(nil, "Update event has no old metadata", "event", e)
+				return false
+			}
+			if e.MetaNew == nil {
+				log.Error(nil, "Update event has no new metadata", "event", e)
+				return false
+			}
+			if e.MetaNew.GetGeneration() == e.MetaOld.GetGeneration() {
 				return false
 			}
 
@@ -127,6 +151,8 @@ type ReconcileServiceConfig struct {
 	// that reads objects from the cache and writes to the apiserver
 	client client.Client
 	scheme *runtime.Scheme
+	// Best practices...
+	recorder record.EventRecorder
 }
 
 // Reconcile reads that state of the cluster for a ServiceConfig object and makes changes based on the state read
@@ -144,7 +170,7 @@ func (r *ReconcileServiceConfig) Reconcile(request reconcile.Request) (reconcile
 	instance := &cloudnativev1alpha1.ServiceConfig{}
 	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if k8s_errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
@@ -152,6 +178,12 @@ func (r *ReconcileServiceConfig) Reconcile(request reconcile.Request) (reconcile
 		}
 		// Error reading the object - requeue the request.
 		return reconcile.Result{}, err
+	}
+
+	// Validate the CR instance
+	if ok, err := r.IsValid(instance); !ok {
+		return reconcile.Result{}, err
+		//return r.ManageError(instance, err)
 	}
 
 	var descriptorsFolder = util.NVL(instance.Spec.DescriptorsFolder, util.DefaultDescriptorsFolder)
@@ -172,14 +204,12 @@ func (r *ReconcileServiceConfig) Reconcile(request reconcile.Request) (reconcile
 		return reconcile.Result{}, err
 	}
 
-	status.State = "IN_PROGRESS"
+	status.State = "WORKING"
 
-	reqLogger.Info("status: " + fmt.Sprintf("%+v", status))
-	reqLogger.Info("instance:.Status " + fmt.Sprintf("%+v", instance.Status))
-	if !reflect.DeepEqual(instance.Status, *status) {
+	if !reflect.DeepEqual(instance.Status, status) {
 		reqLogger.Info("status differs")
-		instance.Status = *status
-		err = r.client.Status().Update(context.TODO(), instance)
+		instance.Status = status
+		err = r.client.Status().Update(context.Background(), instance)
 		if err != nil {
 			reqLogger.Error(err, "Failed to update ServiceConfig status")
 			return reconcile.Result{}, err
@@ -197,7 +227,7 @@ func (r *ReconcileServiceConfig) Reconcile(request reconcile.Request) (reconcile
 	// Check if this Pod already exists
 	found := &corev1.Pod{}
 	err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
+	if err != nil && k8s_errors.IsNotFound(err) {
 		reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
 		err = r.client.Create(context.TODO(), pod)
 		if err != nil {
@@ -213,6 +243,18 @@ func (r *ReconcileServiceConfig) Reconcile(request reconcile.Request) (reconcile
 	// Pod already exists - don't requeue
 	reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
 	return reconcile.Result{}, nil
+}
+
+// IsValid checks if our CR is valid or not
+func (r *ReconcileServiceConfig) IsValid(obj metav1.Object) (bool, error) {
+	serviceConfig, ok := obj.(*cloudnativev1alpha1.ServiceConfig)
+	if !ok {
+		return false, errors.New("not a mycrd object")
+	}
+	if len(serviceConfig.Spec.GitUrl) > 18 {
+		return true, nil
+	}
+	return false, errors.New("not valid becuase blah blah")
 }
 
 // newPodForCR returns a busybox pod with the same name/namespace as the cr
@@ -251,6 +293,10 @@ func getAllConfigMaps(r *ReconcileServiceConfig, request reconcile.Request, conf
 }
 
 func cloneRepository(url string, ref string) (*git.Repository, error) {
+	if _, err := os.Stat(util.GitLocalFilder); os.IsNotExist(err) {
+		os.MkdirAll(util.GitLocalFilder, os.ModePerm)
+	}
+
 	if repo, err := git.PlainOpen(util.GitLocalFilder); err == nil {
 		if w, err := repo.Worktree(); err == nil {
 			if err := w.Pull(&git.PullOptions{RemoteName: "origin"}); err == nil || err.Error() == "already up-to-date" {
@@ -276,10 +322,10 @@ func cloneRepository(url string, ref string) (*git.Repository, error) {
 	}
 }
 
-func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request reconcile.Request, folder string) (*cloudnativev1alpha1.ServiceConfigStatus, error) {
+func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request reconcile.Request, folder string) (cloudnativev1alpha1.ServiceConfigStatus, error) {
 	logger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 
-	status := &cloudnativev1alpha1.ServiceConfigStatus{
+	status := cloudnativev1alpha1.ServiceConfigStatus{
 		ConfigMapNamesOk:  []string{},
 		SecretNamesOk:     []string{},
 		ConfigMapNamesErr: []string{},
@@ -288,7 +334,7 @@ func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request re
 
 	if files, err := ioutil.ReadDir(folder); err == nil {
 		for _, f := range files {
-			logger.Info("===================== Current file: " + folder + f.Name() + " =====================")
+			logger.Info("==== Current file: " + folder + f.Name() + " ====")
 			if b, err := ioutil.ReadFile(folder + f.Name()); err == nil {
 				baseObject := &BaseObject{}
 				dec := k8s_yaml.NewYAMLOrJSONDecoder(bytes.NewReader(b), 1000)
@@ -297,10 +343,8 @@ func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request re
 					case "ConfigMap":
 						if err := handleConfigMap(r, logger, request.Namespace, b); err == nil {
 							status.ConfigMapNamesOk = append(status.ConfigMapNamesOk, baseObject.Name)
-							logger.Info("handleConfigMap.status ok: " + fmt.Sprintf("%v", status.ConfigMapNamesOk))
 						} else {
 							status.ConfigMapNamesErr = append(status.ConfigMapNamesErr, baseObject.Name)
-							logger.Info("handleConfigMap.status err: " + fmt.Sprintf("%v", status.ConfigMapNamesErr))
 						}
 					case "Secret":
 						if err := handleSecret(r, logger, request.Namespace, b); err == nil {
@@ -309,7 +353,7 @@ func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request re
 							status.SecretNamesErr = append(status.SecretNamesErr, baseObject.Name)
 						}
 					default:
-						logger.Info("===== isOther =====" + kind)
+						logger.Info("==== isOther ====" + kind)
 					}
 				} else {
 					logger.Info("Unmarshall BaseObject error: " + err.Error())
@@ -320,7 +364,7 @@ func applyConfigurationDescriptorsInFolder(r *ReconcileServiceConfig, request re
 		}
 	} else {
 		logger.Info("ReadDir error: " + err.Error())
-		return nil, err
+		return status, err
 	}
 
 	return status, nil

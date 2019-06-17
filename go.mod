@@ -37,7 +37,6 @@ require (
 	golang.org/x/oauth2 v0.0.0-20190604053449-0f29369cfe45 // indirect
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4 // indirect
 	gopkg.in/src-d/go-git.v4 v4.11.0
-	gopkg.in/yaml.v2 v2.2.2
 	k8s.io/api v0.0.0-20190528154508-67ef80593b24
 	k8s.io/apiextensions-apiserver v0.0.0-20190426053235-842c4571cde0 // indirect
 	k8s.io/apimachinery v0.0.0-20190528154326-e59c2fb0a8e5
