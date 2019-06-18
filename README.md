@@ -20,7 +20,7 @@ cd ./${OPERATOR_NAME}
 
 operator-sdk add api --api-version=${API_VERSION} --kind=ServiceConfig
 
-operator-sdk add controller --api-version=a${API_VERSION} --kind=ServiceConfig
+operator-sdk add controller --api-version=${API_VERSION} --kind=ServiceConfig
 
 # Modify types
 ./pkg/apis/app/<version>/<kind>_types.go
